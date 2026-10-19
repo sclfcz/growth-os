@@ -32,7 +32,8 @@ function summarize(rows: (typeof studyTimeLogs.$inferSelect)[], now: number) {
 
 export async function GET(req: NextRequest) {
   const res = NextResponse.next();
-  if (!(await getSession(req, res)).authenticated) return NextResponse.json({ error: { message: '请先登录' } }, { status: 401 });
+  const session = await getSession(req, res);
+  if (!session.authenticated) return NextResponse.json({ error: { message: '请先登录' } }, { status: 401 });
   const date = getLogicalDate(); const now = Date.now(); const rows = db.select().from(studyTimeLogs).all();
   const activeLogs = rows.filter(row => row.endedAt === null).sort((a, b) => a.id - b.id).map(row => ({ ...row, elapsedSeconds: secondsFor(row, now) }));
   const completed = [...rows].filter(row => row.endedAt !== null).sort((a, b) => b.id - a.id);
@@ -40,7 +41,7 @@ export async function GET(req: NextRequest) {
   const weekRows = rows.filter(row => row.date >= monday(date) && row.date <= date);
   const monthRows = rows.filter(row => row.date.startsWith(date.slice(0, 7)));
   const recentLogs = completed.slice(0, 10).map(row => ({ ...row, durationSeconds: secondsFor(row, now) }));
-  return NextResponse.json({ activeLogs, recentLogs, today: summarize(todayRows, now), weekSeconds: summarize(weekRows, now).totalSeconds, monthSeconds: summarize(monthRows, now).totalSeconds });
+  return NextResponse.json({ username: session.username ?? 'admin', activeLogs, recentLogs, today: summarize(todayRows, now), weekSeconds: summarize(weekRows, now).totalSeconds, monthSeconds: summarize(monthRows, now).totalSeconds });
 }
 
 export async function POST(req: NextRequest) {
@@ -49,6 +50,7 @@ export async function POST(req: NextRequest) {
   const action = z.discriminatedUnion('action', [
     z.object({ action: z.literal('start'), category: z.enum(['work', 'study']), title: z.string().min(1).max(100), subtitle: z.string().max(160).optional() }),
     z.object({ action: z.literal('stop'), id: z.number().int().positive() }),
+    z.object({ action: z.literal('auto-stop'), id: z.number().int().positive(), endedAt: z.string().datetime() }),
     z.object({ action: z.literal('manual'), category: z.enum(['work', 'study']), title: z.string().trim().min(1).max(100), subtitle: z.string().max(160).optional(), minutes: z.number().int().min(1).max(1440).optional(), startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).optional(), endTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).optional() }),
   ]).safeParse(await req.json().catch(() => null));
   if (!action.success) return NextResponse.json({ error: { message: '时长记录无效，请填写事项和类别。' } }, { status: 400 });
@@ -59,11 +61,13 @@ export async function POST(req: NextRequest) {
     const row = db.insert(studyTimeLogs).values({ date: getLogicalDate(), category, title: action.data.title, subtitle: action.data.subtitle ?? null, startedAt: new Date().toISOString(), note: null }).returning().get();
     return NextResponse.json({ log: row }, { status: 201 });
   }
-  if (action.data.action === 'stop') {
+  if (action.data.action === 'stop' || action.data.action === 'auto-stop') {
     const id = action.data.id;
     const active = rows.find(row => row.id === id && row.endedAt === null);
     if (!active) return NextResponse.json({ error: { message: '这段计时已经结束或不存在。' } }, { status: 404 });
-    const endedAt = new Date().toISOString(); const durationSeconds = secondsBetween(active.startedAt, endedAt);
+    const requestedEnd = action.data.action === 'auto-stop' ? Date.parse(action.data.endedAt) : Date.now();
+    const endTimestamp = Math.min(Date.now(), Math.max(Date.parse(active.startedAt), requestedEnd));
+    const endedAt = new Date(endTimestamp).toISOString(); const durationSeconds = secondsBetween(active.startedAt, endedAt);
     const row = db.update(studyTimeLogs).set({ endedAt, durationSeconds, durationMinutes: Math.floor(durationSeconds / 60) }).where(eq(studyTimeLogs.id, active.id)).returning().get();
     return NextResponse.json({ log: row });
   }

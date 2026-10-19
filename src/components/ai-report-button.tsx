@@ -51,6 +51,12 @@ export function AiReportButton({ type, reference, input, autoTrigger = 0 }: {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    setReport(null);
+    setContextSummary(null);
+    setMessage('');
+  }, [reference, type]);
+
   async function generate(regenerate = false) {
     setBusy(true);
     setMessage('');
@@ -93,7 +99,7 @@ export function AiReportButton({ type, reference, input, autoTrigger = 0 }: {
     </button>
     {report && <section className="setting-card ai-review-card">
       <header className="ai-review-header">
-        <div><p className="card-kicker">复盘师评价</p><h3>今天</h3></div>
+        <div><p className="card-kicker">复盘师评价</p><h3>{type === 'daily' ? `${reference} 复盘` : '今天'}</h3></div>
         {report.score !== undefined && <div className="ai-review-score"><strong>{report.score}</strong><span>/ 100</span></div>}
       </header>
       {report.score_reasoning && <p className="ai-score-reason">{report.score_reasoning}</p>}
