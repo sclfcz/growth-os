@@ -1,0 +1,16 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { sqlite } from './client';
+const migration = readFileSync(resolve(process.cwd(), 'drizzle/0000_init.sql'), 'utf8');
+sqlite.exec(migration);
+const taskColumns = sqlite.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
+if (!taskColumns.some((column) => column.name === 'priority')) sqlite.exec("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'important'");
+sqlite.exec("CREATE TABLE IF NOT EXISTS study_time_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'study', title TEXT, subtitle TEXT, started_at TEXT NOT NULL, ended_at TEXT, duration_seconds INTEGER, duration_minutes INTEGER, note TEXT)");
+const studyColumns = sqlite.prepare('PRAGMA table_info(study_time_logs)').all() as { name: string }[];
+if (!studyColumns.some((column) => column.name === 'duration_seconds')) sqlite.exec('ALTER TABLE study_time_logs ADD COLUMN duration_seconds INTEGER');
+if (!studyColumns.some((column) => column.name === 'category')) sqlite.exec("ALTER TABLE study_time_logs ADD COLUMN category TEXT NOT NULL DEFAULT 'study'");
+if (!studyColumns.some((column) => column.name === 'title')) sqlite.exec('ALTER TABLE study_time_logs ADD COLUMN title TEXT');
+if (!studyColumns.some((column) => column.name === 'subtitle')) sqlite.exec('ALTER TABLE study_time_logs ADD COLUMN subtitle TEXT');
+const hash = '0000_init';
+sqlite.prepare('INSERT OR IGNORE INTO __drizzle_migrations(name) VALUES (?)').run(hash);
+console.log(`Applied migrations through ${hash}`);

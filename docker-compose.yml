@@ -1,0 +1,38 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        REGISTRY_PREFIX: ${REGISTRY_PREFIX:-docker.io}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        NODE_GYP_MIRROR: ${NODE_GYP_MIRROR:-https://npmmirror.com/mirrors/node}
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_PATH: /app/data/growth.db
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "3000"
+    restart: unless-stopped
+    networks: [internal]
+  caddy:
+    image: ${REGISTRY_PREFIX:-docker.io}/library/caddy:2.10-alpine
+    env_file: .env
+    entrypoint: ["/bin/sh", "-c", "cp /etc/caddy/Caddyfile.$${ACCESS_MODE} /etc/caddy/Caddyfile && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
+    volumes:
+      - ./deploy/Caddyfile.ip:/etc/caddy/Caddyfile.ip:ro
+      - ./deploy/Caddyfile.domain:/etc/caddy/Caddyfile.domain:ro
+      - ./data/caddy:/data
+      - caddy_config:/config
+    depends_on: [app]
+    restart: unless-stopped
+    networks: [internal]
+networks:
+  internal:
+volumes:
+  caddy_config:

@@ -1,0 +1,6 @@
+import { addDays } from './date';
+export type ScorePart={key:string;score:number;weight:number;applicable:boolean};
+export function normalizeWeights(parts:readonly ScorePart[]):ScorePart[]{const applicable=parts.filter(part=>part.applicable);const total=applicable.reduce((sum,part)=>sum+part.weight,0);return parts.map(part=>({...part,weight:part.applicable&&total>0?part.weight*100/total:0}));}
+export function computeWeightedScore(parts:readonly ScorePart[],restDay=false):{score:number|null;parts:ScorePart[]}{if(restDay)return{score:null,parts:[]};const normalized=normalizeWeights(parts);const used=normalized.filter(part=>part.applicable);if(!used.length)return{score:0,parts:normalized};return{score:Math.round(used.reduce((sum,part)=>sum+part.score*part.weight,0)/100),parts:normalized};}
+export function computeDayScore(parts: Readonly<Record<string, number>>, restDay = false): { score: number | null; parts: Record<string, number> } {if(restDay)return{score:null,parts:{}};const values=Object.values(parts);return{score:values.length?Math.round(values.reduce((a,b)=>a+b,0)/values.length):0,parts:{...parts}};}
+export function streak(dates: readonly string[], today: string): number {const set=new Set(dates);let count=0;let cursor=today;while(set.has(cursor)){count+=1;cursor=addDays(cursor,-1);}return count;}

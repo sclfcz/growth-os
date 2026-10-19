@@ -1,0 +1,1 @@
+export function computeDynamicDailyBudget(monthlyBudgetCents:number,monthSpentCents:number,remainingDaysIncludingToday:number):number{return Math.max(0,Math.floor((monthlyBudgetCents-monthSpentCents)/Math.max(1,remainingDaysIncludingToday)));}

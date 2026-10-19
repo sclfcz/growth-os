@@ -1,0 +1,1 @@
+import{expect,it}from'vitest';import{computeDynamicDailyBudget}from'@/server/core/budget';it('remaining monthly spend is divided across the days left including today',()=>expect(computeDynamicDailyBudget(300000,150000,15)).toBe(10000));

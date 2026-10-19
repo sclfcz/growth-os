@@ -1,0 +1,1 @@
+import{SettingsPanel}from'@/components/settings-panel';export default function SettingsPage(){return <SettingsPanel aiEnabled={Boolean(process.env.AI_BASE_URL&&process.env.AI_API_KEY&&process.env.AI_MODEL)}/>;}

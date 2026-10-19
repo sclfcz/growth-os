@@ -1,0 +1,44 @@
+import { addDays } from './date';
+export const LADDER = [1, 3, 7, 14, 30, 60, 120] as const;
+export type Rating = 'again' | 'hard' | 'good';
+export type ItemState = { stage: number; dueDate: string | null; status: string; lapses: number; lastRating?: Rating | null };
+export type ScheduleResult = ItemState & { interval: number; dueDate: string };
+export function deriveStatus(stage: number, lapses: number, lastRating: Rating | null = null): string {
+  if (lapses >= 3) return 'leech';
+  if (stage >= 4 && lastRating === 'good') return 'mastered';
+  if (stage >= 2) return 'reviewing';
+  return 'learning';
+}
+export function loadBalance(target: string, interval: number, dueCounts: Readonly<Record<string, number>>, fuzz = Math.round(interval * 0.15)): string {
+  if (interval < 7 || fuzz <= 0) return target;
+  let best = target;
+  for (let offset = -fuzz; offset <= fuzz; offset += 1) {
+    const candidate = addDays(target, offset);
+    if ((dueCounts[candidate] ?? 0) < (dueCounts[best] ?? 0)) best = candidate;
+  }
+  return best;
+}
+export function applyRating(item: ItemState, rating: Rating, today: string, maxIntervalDays = 30, dueCounts: Readonly<Record<string, number>> = {}): ScheduleResult {
+  let stage = item.stage;
+  let lapses = item.lapses;
+  if (item.status === 'new') stage = rating === 'again' ? 0 : rating === 'hard' ? 1 : 2;
+  else if (rating === 'good') stage = Math.min(stage + 1, 6);
+  else if (rating === 'hard') stage = stage === 0 ? 1 : stage;
+  else { stage = Math.max(stage - 2, 0); lapses += 1; }
+  const interval = Math.min(LADDER[stage] ?? 1, maxIntervalDays);
+  const target = addDays(today, interval);
+  const dueDate = loadBalance(target, interval, dueCounts);
+  return { stage, lapses, interval, dueDate, status: deriveStatus(stage, lapses, rating), lastRating: rating };
+}
+export function undoRating<T extends ItemState>(snapshot: T): T { return { ...snapshot }; }
+/** Distribute initial onboard reviews evenly across the specification's day 4–12 window. */
+export function spreadOnboardDueDates(count: number, today: string, windowDays = 9): string[] {
+  const total = Math.max(0, Math.floor(count));
+  return Array.from({ length: total }, (_, index) => addDays(today, 4 + (index % windowDays)));
+}
+export function onboardDueOffset(index: number, rating: Rating): number {
+  const position=Math.max(0,Math.floor(index));
+  if(rating==='again')return 1+(position%3);
+  if(rating==='hard')return 2+(position%5);
+  return 4+(position%9);
+}

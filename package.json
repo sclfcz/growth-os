@@ -1,0 +1,46 @@
+{
+  "name": "growth-os",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/server/db/migrate.ts",
+    "seed": "tsx src/server/db/seed.ts"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.1.14",
+    "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^12.4.1",
+    "dayjs": "^1.11.18",
+    "drizzle-orm": "^0.44.6",
+    "iron-session": "^8.0.4",
+    "lucide-react": "^0.468.0",
+    "next": "15.5.10",
+    "react": "19.1.5",
+    "react-dom": "19.1.5",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.1",
+    "@playwright/test": "^1.56.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.18.12",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "drizzle-kit": "^0.31.5",
+    "eslint": "^9.37.0",
+    "eslint-config-next": "15.5.10",
+    "tailwindcss": "^4.1.14",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
