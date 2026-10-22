@@ -13,7 +13,7 @@ export function buildDailyPlan(input:DailyPlanInput):DailyPlan{
  const reviewCap=Math.floor(budgetMinutes*.7/reviewMinutes);
  const reviews=Math.min(dueCount,reviewCap);
  const backlog=Math.max(0,dueCount-reviews)+backlogCount;
- if(backlog>backlogCapacity*2)return{reviews,newItems:0,backlog,minutes:reviews*reviewMinutes,mode:'clearing'};
+ if(backlog>backlogCapacity*2){const protectedNew=Math.min(Math.max(1,minNewPerDay),maxNewPerDay);return{reviews,newItems:protectedNew,backlog,minutes:reviews*reviewMinutes+protectedNew*newItemMinutes,mode:'clearing'};}
  const remaining=Math.max(0,budgetMinutes-reviews*reviewMinutes);
  const capacity=Math.floor(remaining/newItemMinutes);
  const newItems=capacity===0?0:Math.min(maxNewPerDay,Math.max(Math.min(minNewPerDay,capacity),capacity));
