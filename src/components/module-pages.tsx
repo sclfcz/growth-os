@@ -44,8 +44,9 @@ export function JournalPage({aiEnabled=false,date}:{aiEnabled?:boolean;date:stri
   const checkRollover=()=>{
    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hourCycle:'h23'}).formatToParts(new Date());
    const part=(type:Intl.DateTimeFormatPartTypes)=>parts.find(item=>item.type===type)?.value??'00';
-   const today=`${part('year')}-${part('month')}-${part('day')}`;
-   if(Number(part('hour'))>=1&&today!==rolledDate){setRolledDate(today);setSelectedDate(today);setForm({...emptyJournalForm});setMsg('');setAiInput({});setAutoTrigger(0);}
+   const currentHour=Number(part('hour'));
+   const today=new Date(Date.UTC(Number(part('year')),Number(part('month'))-1,Number(part('day'))-(currentHour<3?1:0))).toISOString().slice(0,10);
+   if(today!==rolledDate){setRolledDate(today);setSelectedDate(today);setForm({...emptyJournalForm});setMsg('');setAiInput({});setAutoTrigger(0);}
   };
   checkRollover();
   const timer=window.setInterval(checkRollover,15_000);

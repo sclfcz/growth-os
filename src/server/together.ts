@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { getPrimaryDatabasePath, runWithDatabaseUserContext } from '@/server/db/client';
+import { getLogicalDayStart } from '@/server/core/date';
 
 const configuredPath = getPrimaryDatabasePath();
 const sharedPath = join(dirname(configuredPath), 'together.db');
@@ -111,8 +112,7 @@ export function getPartnerStudyStatus(partner: TogetherUser, now = new Date()) {
     const database = new Database(databasePath, { readonly: true, fileMustExist: true });
     try {
       const nowMs = now.getTime();
-      const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-      const startOfDay = Date.parse(`${date}T00:00:00+08:00`);
+      const startOfDay = getLogicalDayStart(now, 'Asia/Shanghai');
       const rows = database.prepare('SELECT category,title,started_at,ended_at FROM study_time_logs').all() as StudyRow[];
       const intervals = rows.filter(row => row.category === 'study').map(row => ({
         start: Math.max(startOfDay, Date.parse(row.started_at)),
