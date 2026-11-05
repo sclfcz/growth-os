@@ -9,6 +9,7 @@ import { chatCompletion } from '@/server/ai/client';
 import { db } from '@/server/db/client';
 import { aiReports, bodyWeights, dailyPlanItems, dayMeta, decks, exercises, items, journals, meditationSessions, reviewLogs, settings, studyTimeLogs, tasks, transactions, workouts, workoutSets } from '@/server/db/schema';
 import { addDays } from '@/server/core/date';
+import { getStudyTimeSeconds } from '@/server/core/study-time';
 
 const schema = z.object({
   type: z.enum(['daily', 'weekly', 'leech']),
@@ -130,9 +131,7 @@ function getDailyContext(date: string, submitted: Record<string, unknown>) {
   const journal = db.select().from(journals).where(eq(journals.date, date)).get() ?? submitted.journal ?? null;
   const studyRows = db.select().from(studyTimeLogs).all().filter(row => row.date === date);
   const now = Date.now();
-  const durationSeconds = (row: typeof studyRows[number]) => row.endedAt
-    ? row.durationSeconds ?? Math.max(0, Math.floor((Date.parse(row.endedAt) - Date.parse(row.startedAt)) / 1000))
-    : Math.max(0, Math.floor((now - Date.parse(row.startedAt)) / 1000));
+  const durationSeconds = (row: typeof studyRows[number]) => getStudyTimeSeconds(row, now);
   const timeByCategory = (category: 'study' | 'work') => studyRows.filter(row => row.category === category).reduce((sum, row) => sum + durationSeconds(row), 0);
   const todayTasks = db.select().from(tasks).all().filter(row => row.date === date)
     .sort((a, b) => ({ 'urgent-important': 0, important: 1, urgent: 2 }[a.priority as 'urgent-important' | 'important' | 'urgent'] ?? 1) - ({ 'urgent-important': 0, important: 1, urgent: 2 }[b.priority as 'urgent-important' | 'important' | 'urgent'] ?? 1));
@@ -201,7 +200,7 @@ function getDailyContext(date: string, submitted: Record<string, unknown>) {
     study: {
       loggedSeconds: timeByCategory('study'),
       targetSeconds: studyTargetSeconds,
-      activeOrRecentEntries: studyRows.map(({ title, subtitle, startedAt, endedAt, durationSeconds: storedDuration, durationMinutes, note }) => ({ title, subtitle, startedAt, endedAt, seconds: storedDuration ?? (durationMinutes ? durationMinutes * 60 : null), note })),
+      activeOrRecentEntries: studyRows.map(row => ({ title: row.title, subtitle: row.subtitle, startedAt: row.startedAt, endedAt: row.endedAt, seconds: durationSeconds(row), note: row.note })),
       leetcodeReviews: leetcode,
     },
     work: { loggedSeconds: timeByCategory('work'), entries: studyRows.filter(row => row.category === 'work').map(row => ({ title: row.title, subtitle: row.subtitle, startedAt: row.startedAt, endedAt: row.endedAt, seconds: durationSeconds(row) })) },

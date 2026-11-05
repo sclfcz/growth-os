@@ -4,20 +4,23 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 const REMINDER_AFTER_MS = 90 * 60 * 1000;
 const RESPONSE_WINDOW_MS = 60 * 1000;
-type ActiveLog = { id: number; category: 'study' | 'work'; title: string | null; startedAt: string };
-type ReminderState = { startedAt: string; nextPromptAt: number; deadline?: number };
+type ActiveLog = { id: number; category: 'study' | 'work'; title: string | null; startedAt: string; activeSince: string | null; elapsedSeconds: number; paused: boolean };
+type ReminderState = { startedAt: string; nextPromptAtElapsedSeconds: number; deadline?: number };
 const storageKey = (username: string, id: number) => `growth-os:focus-reminder:${username}:${id}`;
 const parseState = (username: string, log: ActiveLog): ReminderState => {
-  const initial = Date.parse(log.startedAt) + REMINDER_AFTER_MS;
   try {
     const value = localStorage.getItem(storageKey(username, log.id));
     if (value) {
-      const saved = JSON.parse(value) as ReminderState;
-      if (saved.startedAt === log.startedAt && Number.isFinite(saved.nextPromptAt)) return saved;
+      const saved = JSON.parse(value) as ReminderState & { nextPromptAt?: number };
+      if (saved.startedAt === log.startedAt && Number.isFinite(saved.nextPromptAtElapsedSeconds)) return saved;
+      if (saved.startedAt === log.startedAt && Number.isFinite(saved.nextPromptAt)) {
+        return { startedAt: log.startedAt, nextPromptAtElapsedSeconds: log.elapsedSeconds + Math.max(0, (saved.nextPromptAt! - Date.now()) / 1000), ...(saved.deadline ? { deadline: saved.deadline } : {}) };
+      }
     }
-  } catch { /* Use the timer's start time when browser storage is unavailable. */ }
-  return { startedAt: log.startedAt, nextPromptAt: initial };
+  } catch { /* Use the elapsed timer value when browser storage is unavailable. */ }
+  return { startedAt: log.startedAt, nextPromptAtElapsedSeconds: REMINDER_AFTER_MS / 1000 };
 };
+const elapsedAt = (log: ActiveLog, now: number) => log.elapsedSeconds + (log.paused || !log.activeSince ? 0 : Math.max(0, Math.floor((now - Date.parse(log.activeSince)) / 1000)));
 
 export function FocusReminder() {
   const [username, setUsername] = useState('');
@@ -44,11 +47,13 @@ export function FocusReminder() {
     const tick = window.setInterval(() => setNow(Date.now()), 1_000);
     const visibility = () => { if (!document.hidden) { setNow(Date.now()); void refresh(); } };
     window.addEventListener('focus', visibility);
+    window.addEventListener('growth-os:focus-timer-updated', visibility);
     document.addEventListener('visibilitychange', visibility);
     return () => {
       window.clearInterval(poll);
       window.clearInterval(tick);
       window.removeEventListener('focus', visibility);
+      window.removeEventListener('growth-os:focus-timer-updated', visibility);
       document.removeEventListener('visibilitychange', visibility);
     };
   }, [refresh]);
@@ -56,9 +61,10 @@ export function FocusReminder() {
   const dueLog = useMemo(() => {
     if (!username) return null;
     for (const log of activeLogs) {
+      if (log.paused) continue;
       const saved = parseState(username, log);
       if (saved.deadline) return { log, saved };
-      if (!saved.deadline && now >= saved.nextPromptAt) return { log, saved };
+      if (!saved.deadline && elapsedAt(log, now) >= saved.nextPromptAtElapsedSeconds) return { log, saved };
     }
     return null;
   }, [activeLogs, now, username]);
@@ -68,7 +74,15 @@ export function FocusReminder() {
     const activeIds = new Set(activeLogs.map(log => log.id));
     for (const log of activeLogs) {
       const saved = parseState(username, log);
-      if (now >= saved.nextPromptAt && !saved.deadline) {
+      if (log.paused) {
+        if (saved.deadline) {
+          saved.nextPromptAtElapsedSeconds = elapsedAt(log, now) + REMINDER_AFTER_MS / 1000;
+          delete saved.deadline;
+          try { localStorage.setItem(storageKey(username, log.id), JSON.stringify(saved)); } catch { /* The visible timer still works for this page session. */ }
+        }
+        continue;
+      }
+      if (elapsedAt(log, now) >= saved.nextPromptAtElapsedSeconds && !saved.deadline) {
         saved.deadline = now + RESPONSE_WINDOW_MS;
         try { localStorage.setItem(storageKey(username, log.id), JSON.stringify(saved)); } catch { /* The visible timer still works for this page session. */ }
       }
@@ -84,8 +98,8 @@ export function FocusReminder() {
   }, [activeLogs, now, username]);
 
   useEffect(() => {
-    if (pendingId === null && dueLog?.saved.deadline && dueLog.saved.nextPromptAt !== dismissedCycle) setPendingId(dueLog.log.id);
-    if (pendingId !== null && !activeLogs.some(log => log.id === pendingId)) setPendingId(null);
+    if (pendingId === null && dueLog?.saved.deadline && dueLog.saved.nextPromptAtElapsedSeconds !== dismissedCycle) setPendingId(dueLog.log.id);
+    if (pendingId !== null && !activeLogs.some(log => log.id === pendingId && !log.paused)) setPendingId(null);
   }, [activeLogs, dismissedCycle, dueLog, pendingId]);
 
   const pending = activeLogs.find(log => log.id === pendingId);
@@ -122,14 +136,15 @@ export function FocusReminder() {
 
   function continueFocus() {
     if (!pending || !username) return;
-    const next: ReminderState = { startedAt: pending.startedAt, nextPromptAt: Date.now() + REMINDER_AFTER_MS };
+    const dismissedAt = pendingState?.nextPromptAtElapsedSeconds ?? null;
+    const next: ReminderState = { startedAt: pending.startedAt, nextPromptAtElapsedSeconds: elapsedAt(pending, now) + REMINDER_AFTER_MS / 1000 };
     try { localStorage.setItem(storageKey(username, pending.id), JSON.stringify(next)); } catch { /* Keep this page's session usable without persistence. */ }
     setPendingId(null);
-    setDismissedCycle(pendingState?.nextPromptAt ?? null);
+    setDismissedCycle(dismissedAt);
     setError('');
   }
 
-  if (!pending || !pendingState?.deadline) return null;
+  if (!pending || pending.paused || !pendingState?.deadline) return null;
   const category = pending.category === 'study' ? '学习' : '工作';
   return <div className="focus-reminder-backdrop">
     <section className="focus-reminder-dialog" role="alertdialog" aria-modal="true" aria-labelledby="focus-reminder-title" aria-describedby="focus-reminder-description">

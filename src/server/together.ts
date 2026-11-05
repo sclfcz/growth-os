@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { getPrimaryDatabasePath, runWithDatabaseUserContext } from '@/server/db/client';
 import { getLogicalDayStart } from '@/server/core/date';
+import { getStudyTimeIntervals, getStudyTimeSeconds, hasRunningStudyTimeSegment, isStudyTimePaused } from '@/server/core/study-time';
 
 const configuredPath = getPrimaryDatabasePath();
 const sharedPath = join(dirname(configuredPath), 'together.db');
@@ -88,7 +89,7 @@ export function getUnreadSummary(username: string, partner: string) {
   return { unreadCount: count.count, latestUnread: latest ?? null };
 }
 
-type StudyRow = { category: string; title: string | null; started_at: string; ended_at: string | null };
+type StudyRow = { category: string; title: string | null; started_at: string; ended_at: string | null; segments_json: string | null };
 const unionSeconds = (intervals: { start: number; end: number }[]) => {
   intervals.sort((a, b) => a.start - b.start);
   let total = 0;
@@ -113,18 +114,23 @@ export function getPartnerStudyStatus(partner: TogetherUser, now = new Date()) {
     try {
       const nowMs = now.getTime();
       const startOfDay = getLogicalDayStart(now, 'Asia/Shanghai');
-      const rows = database.prepare('SELECT category,title,started_at,ended_at FROM study_time_logs').all() as StudyRow[];
-      const intervals = rows.filter(row => row.category === 'study').map(row => ({
-        start: Math.max(startOfDay, Date.parse(row.started_at)),
-        end: Math.min(nowMs, row.ended_at ? Date.parse(row.ended_at) : nowMs),
-      })).filter(row => row.end > row.start);
+      let rows: StudyRow[];
+      try {
+        rows = database.prepare('SELECT category,title,started_at,ended_at,segments_json FROM study_time_logs').all() as StudyRow[];
+      } catch {
+        rows = (database.prepare('SELECT category,title,started_at,ended_at FROM study_time_logs').all() as Omit<StudyRow, 'segments_json'>[]).map(row => ({ ...row, segments_json: null }));
+      }
+      const intervals = rows.filter(row => row.category === 'study').flatMap(row => getStudyTimeIntervals({ startedAt: row.started_at, endedAt: row.ended_at, segmentsJson: row.segments_json }, nowMs))
+        .map(interval => ({ start: Math.max(startOfDay, interval.start), end: Math.min(nowMs, interval.end) })).filter(row => row.end > row.start);
       const active = rows.filter(row => row.ended_at === null).sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at))[0];
       return {
         studySeconds: unionSeconds(intervals),
+        studyRunning: rows.some(row => row.category === 'study' && row.ended_at === null && hasRunningStudyTimeSegment({ startedAt: row.started_at, endedAt: row.ended_at, segmentsJson: row.segments_json })),
         activeActivity: active ? {
           category: active.category === 'study' ? '学习' : '工作',
           title: active.title ?? '正在进行',
-          elapsedSeconds: Math.max(0, Math.floor((nowMs - Date.parse(active.started_at)) / 1000)),
+          elapsedSeconds: getStudyTimeSeconds({ startedAt: active.started_at, endedAt: active.ended_at, segmentsJson: active.segments_json }, nowMs),
+          paused: isStudyTimePaused({ startedAt: active.started_at, endedAt: active.ended_at, segmentsJson: active.segments_json }),
         } : null,
       };
     } finally {

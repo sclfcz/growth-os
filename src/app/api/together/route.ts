@@ -23,6 +23,7 @@ export async function GET(request: NextRequest) {
     ownPreferences,
     partnerSharing: partnerPreferences,
     studySeconds: study,
+    studyRunning: partnerPreferences.shareStudy ? partnerStatus?.studyRunning ?? false : false,
     activeActivity: activity,
     ...unread,
   });

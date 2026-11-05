@@ -5,23 +5,25 @@ import { db } from '@/server/db/client';
 import { studyTimeLogs } from '@/server/db/schema';
 import { getSession } from '@/server/auth';
 import { addDays, getLogicalDate, logicalDateTime } from '@/server/core/date';
+import { getStudyTimeIntervals, getStudyTimeSeconds, getStudyTimeSegments, hasRunningStudyTimeSegment, isStudyTimePaused, type StudyTimeSegment } from '@/server/core/study-time';
 
 export const dynamic = 'force-dynamic';
-const monday = (date: string) => { const day = new Date(`${date}T12:00:00+08:00`).getDay(); return addDays(date, -(day + 6) % 7); };
+const monday = (date: string) => { const day = new Date(`${date}T12:00:00+08:00`).getDay(); return addDays(date, -((day + 6) % 7)); };
 const secondsBetween = (start: string, end: string) => Math.max(0, Math.floor((Date.parse(end) - Date.parse(start)) / 1000));
-const secondsFor = (row: typeof studyTimeLogs.$inferSelect, now = Date.now()) => row.endedAt
-  ? row.durationSeconds ?? (row.durationMinutes !== null ? row.durationMinutes * 60 : secondsBetween(row.startedAt, row.endedAt))
-  : Math.max(0, Math.floor((now - Date.parse(row.startedAt)) / 1000));
+const secondsFor = (row: typeof studyTimeLogs.$inferSelect, now = Date.now()) => row.endedAt && row.durationSeconds !== null
+  ? row.durationSeconds
+  : getStudyTimeSeconds(row, now);
 
 function summarize(rows: (typeof studyTimeLogs.$inferSelect)[], now: number) {
-  const intervals = rows.map(row => ({ start: Date.parse(row.startedAt), end: row.endedAt ? Date.parse(row.endedAt) : now, category: row.category, seconds: secondsFor(row, now) })).filter(row => row.end > row.start).sort((a, b) => a.start - b.start);
+  const intervals = rows.flatMap(row => getStudyTimeIntervals(row, now).map(interval => ({ ...interval, category: row.category })));
   const unionMilliseconds = (source: typeof intervals) => {
+    const sorted = [...source].sort((a, b) => a.start - b.start);
     let total = 0; let start = 0; let end = 0;
-    for (const interval of source) {
+    for (const interval of sorted) {
       if (interval.start > end) { total += Math.max(0, end - start); start = interval.start; end = interval.end; }
       else end = Math.max(end, interval.end);
     }
-    if (source.length) total += Math.max(0, end - start);
+    if (sorted.length) total += Math.max(0, end - start);
     return total;
   };
   const totalSeconds = Math.floor(unionMilliseconds(intervals) / 1000);
@@ -35,13 +37,18 @@ export async function GET(req: NextRequest) {
   const session = await getSession(req, res);
   if (!session.authenticated) return NextResponse.json({ error: { message: '请先登录' } }, { status: 401 });
   const date = getLogicalDate(); const now = Date.now(); const rows = db.select().from(studyTimeLogs).all();
-  const activeLogs = rows.filter(row => row.endedAt === null).sort((a, b) => a.id - b.id).map(row => ({ ...row, elapsedSeconds: secondsFor(row, now) }));
+  const activeLogs = rows.filter(row => row.endedAt === null).sort((a, b) => a.id - b.id).map(row => ({
+    ...row,
+    elapsedSeconds: secondsFor(row, now),
+    paused: isStudyTimePaused(row),
+    activeSince: getStudyTimeSegments(row).find(segment => segment.endedAt === null)?.startedAt ?? null,
+  }));
   const completed = [...rows].filter(row => row.endedAt !== null).sort((a, b) => b.id - a.id);
   const todayRows = rows.filter(row => row.date === date);
   const weekRows = rows.filter(row => row.date >= monday(date) && row.date <= date);
   const monthRows = rows.filter(row => row.date.startsWith(date.slice(0, 7)));
   const recentLogs = completed.slice(0, 10).map(row => ({ ...row, durationSeconds: secondsFor(row, now) }));
-  return NextResponse.json({ username: session.username ?? 'admin', activeLogs, recentLogs, today: summarize(todayRows, now), weekSeconds: summarize(weekRows, now).totalSeconds, monthSeconds: summarize(monthRows, now).totalSeconds });
+  return NextResponse.json({ username: session.username ?? 'admin', activeLogs, recentLogs, today: summarize(todayRows, now), weekSeconds: summarize(weekRows, now).totalSeconds, monthSeconds: summarize(monthRows, now).totalSeconds, activeUnionSeconds: summarize(rows.filter(row => row.endedAt === null), now).totalSeconds });
 }
 
 export async function POST(req: NextRequest) {
@@ -49,6 +56,8 @@ export async function POST(req: NextRequest) {
   if (!(await getSession(req, res)).authenticated) return NextResponse.json({ error: { message: '请先登录' } }, { status: 401 });
   const action = z.discriminatedUnion('action', [
     z.object({ action: z.literal('start'), category: z.enum(['work', 'study']), title: z.string().min(1).max(100), subtitle: z.string().max(160).optional() }),
+    z.object({ action: z.literal('pause'), id: z.number().int().positive() }),
+    z.object({ action: z.literal('resume'), id: z.number().int().positive() }),
     z.object({ action: z.literal('stop'), id: z.number().int().positive() }),
     z.object({ action: z.literal('auto-stop'), id: z.number().int().positive(), endedAt: z.string().datetime() }),
     z.object({ action: z.literal('manual'), category: z.enum(['work', 'study']), title: z.string().trim().min(1).max(100), subtitle: z.string().max(160).optional(), minutes: z.number().int().min(1).max(1440).optional(), startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).optional(), endTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).optional() }),
@@ -58,17 +67,50 @@ export async function POST(req: NextRequest) {
   if (action.data.action === 'start') {
     const category = action.data.category;
     if (rows.some(row => row.endedAt === null && row.category === category)) return NextResponse.json({ error: { message: '这一类别已有计时，请先结束当前计时。' } }, { status: 409 });
-    const row = db.insert(studyTimeLogs).values({ date: getLogicalDate(), category, title: action.data.title, subtitle: action.data.subtitle ?? null, startedAt: new Date().toISOString(), note: null }).returning().get();
+    const startedAt = new Date().toISOString();
+    const row = db.insert(studyTimeLogs).values({ date: getLogicalDate(), category, title: action.data.title, subtitle: action.data.subtitle ?? null, startedAt, segmentsJson: JSON.stringify([{ startedAt, endedAt: null }]), note: null }).returning().get();
     return NextResponse.json({ log: row }, { status: 201 });
   }
-  if (action.data.action === 'stop' || action.data.action === 'auto-stop') {
-    const id = action.data.id;
-    const active = rows.find(row => row.id === id && row.endedAt === null);
+  const actionId = 'id' in action.data ? action.data.id : null;
+  if (action.data.action === 'pause' || action.data.action === 'resume') {
+    const active = actionId === null ? undefined : rows.find(row => row.id === actionId && row.endedAt === null);
     if (!active) return NextResponse.json({ error: { message: '这段计时已经结束或不存在。' } }, { status: 404 });
-    const requestedEnd = action.data.action === 'auto-stop' ? Date.parse(action.data.endedAt) : Date.now();
-    const endTimestamp = Math.min(Date.now(), Math.max(Date.parse(active.startedAt), requestedEnd));
-    const endedAt = new Date(endTimestamp).toISOString(); const durationSeconds = secondsBetween(active.startedAt, endedAt);
-    const row = db.update(studyTimeLogs).set({ endedAt, durationSeconds, durationMinutes: Math.floor(durationSeconds / 60) }).where(eq(studyTimeLogs.id, active.id)).returning().get();
+    const segments = getStudyTimeSegments(active);
+    const running = hasRunningStudyTimeSegment(active);
+    if (action.data.action === 'pause') {
+      if (!running) return NextResponse.json({ error: { message: '这段计时已经暂停。' } }, { status: 409 });
+      const now = new Date().toISOString();
+      const last = segments[segments.length - 1] as StudyTimeSegment;
+      segments[segments.length - 1] = { ...last, endedAt: now };
+      const segmentsJson = JSON.stringify(segments);
+      const durationSeconds = getStudyTimeSeconds({ ...active, segmentsJson }, Date.parse(now));
+      const log = db.update(studyTimeLogs).set({ segmentsJson, durationSeconds, durationMinutes: Math.floor(durationSeconds / 60) }).where(eq(studyTimeLogs.id, active.id)).returning().get();
+      return NextResponse.json({ log, paused: true, elapsedSeconds: durationSeconds });
+    }
+    if (running) return NextResponse.json({ error: { message: '这段计时正在运行。' } }, { status: 409 });
+    const resumedAt = new Date().toISOString();
+    segments.push({ startedAt: resumedAt, endedAt: null });
+    const segmentsJson = JSON.stringify(segments);
+    const elapsedSeconds = getStudyTimeSeconds({ ...active, segmentsJson }, Date.parse(resumedAt));
+    const log = db.update(studyTimeLogs).set({ segmentsJson, durationSeconds: elapsedSeconds, durationMinutes: Math.floor(elapsedSeconds / 60) }).where(eq(studyTimeLogs.id, active.id)).returning().get();
+    return NextResponse.json({ log, paused: false, elapsedSeconds });
+  }
+  if (action.data.action === 'stop' || action.data.action === 'auto-stop') {
+    const active = actionId === null ? undefined : rows.find(row => row.id === actionId && row.endedAt === null);
+    if (!active) return NextResponse.json({ error: { message: '这段计时已经结束或不存在。' } }, { status: 404 });
+    const now = Date.now();
+    const requestedEnd = action.data.action === 'auto-stop' ? Date.parse(action.data.endedAt) : now;
+    const endTimestamp = Math.min(now, Math.max(Date.parse(active.startedAt), requestedEnd));
+    const endedAt = new Date(endTimestamp).toISOString();
+    const segments = getStudyTimeSegments(active);
+    if (hasRunningStudyTimeSegment(active)) {
+      const lastIndex = segments.length - 1;
+      const last = segments[lastIndex] as StudyTimeSegment;
+      segments[lastIndex] = { ...last, endedAt: new Date(Math.max(Date.parse(last.startedAt), endTimestamp)).toISOString() };
+    }
+    const segmentsJson = JSON.stringify(segments);
+    const durationSeconds = getStudyTimeSeconds({ ...active, endedAt, segmentsJson }, endTimestamp);
+    const row = db.update(studyTimeLogs).set({ endedAt, segmentsJson, durationSeconds, durationMinutes: Math.floor(durationSeconds / 60) }).where(eq(studyTimeLogs.id, active.id)).returning().get();
     return NextResponse.json({ log: row });
   }
   const date = getLogicalDate();
@@ -83,7 +125,8 @@ export async function POST(req: NextRequest) {
     : logicalDateTime(date, action.data.startTime!);
   const durationSeconds = secondsBetween(startedAt, endedAt);
   if (durationSeconds <= 0 || durationSeconds > 24 * 60 * 60) return NextResponse.json({ error: { message: '补记结束时间必须晚于开始时间，且时长不能超过 24 小时。' } }, { status: 400 });
-  const row = db.insert(studyTimeLogs).values({ date, category: action.data.category, title: action.data.title, subtitle: action.data.subtitle ?? null, startedAt, endedAt, durationSeconds, durationMinutes: Math.floor(durationSeconds / 60), note: '手动记录' }).returning().get();
+  const segmentsJson = JSON.stringify([{ startedAt, endedAt }]);
+  const row = db.insert(studyTimeLogs).values({ date, category: action.data.category, title: action.data.title, subtitle: action.data.subtitle ?? null, startedAt, endedAt, durationSeconds, durationMinutes: Math.floor(durationSeconds / 60), note: '手动记录', segmentsJson }).returning().get();
   return NextResponse.json({ log: row }, { status: 201 });
 }
 

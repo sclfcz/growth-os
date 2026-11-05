@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageCircle, Send, X } from 'lucide-react';
 
-type ActiveActivity = { category: '学习' | '工作'; title: string; elapsedSeconds: number } | null;
+type ActiveActivity = { category: '学习' | '工作'; title: string; elapsedSeconds: number; paused?: boolean } | null;
 type Overview = {
   paired: boolean;
   partner: { username: string; nickname: string } | null;
   partnerSharing?: { shareStudy: boolean; shareActivity: boolean };
   studySeconds: number | null;
+  studyRunning?: boolean;
   activeActivity: ActiveActivity;
   unreadCount: number;
   latestUnread: { id: number; sender: string; content: string; createdAt: string } | null;
@@ -49,13 +50,13 @@ export function TogetherCard({ variant = 'desktop' }: { variant?: 'desktop' | 'm
     document.addEventListener('visibilitychange', visibility);
     return () => { window.clearInterval(poll); window.clearInterval(tick); document.removeEventListener('visibilitychange', visibility); };
   }, [refresh]);
-  const studySeconds = overview?.studySeconds === null || overview?.studySeconds === undefined ? null : overview.studySeconds + (overview.activeActivity?.category === '学习' ? Math.floor((now - snapshotAt) / 1000) : 0);
+  const studySeconds = overview?.studySeconds === null || overview?.studySeconds === undefined ? null : overview.studySeconds + (overview.studyRunning ? Math.floor((now - snapshotAt) / 1000) : 0);
 
   return <article className={`dashboard-card together-card together-card-${variant}`}>
     <div className="card-header"><div><p className="card-kicker">一起 · 今日</p><h2>{overview?.partner?.nickname ?? '一起'}</h2></div><button className="together-open-button" onClick={openTogetherConversation} aria-label="打开留言"><MessageCircle size={18}/>{(overview?.unreadCount ?? 0) > 0 && <span>{overview?.unreadCount}</span>}</button></div>
     {!overview?.paired ? <p className="quiet-copy">当前账号还没有配对。</p> : <>
       <div className="together-study-total"><span>今日学习 · 截至此刻</span>{studySeconds === null ? <strong className="together-private">对方尚未开启学习时长共享</strong> : <strong>{formatDuration(studySeconds)}</strong>}</div>
-      {overview.activeActivity && <div className="together-active"><div><span className="together-active-kind">● 正在{overview.activeActivity.category}</span><span className="together-active-elapsed">本次 {formatClock(overview.activeActivity.elapsedSeconds)}</span></div><strong>{overview.activeActivity.title}</strong></div>}
+      {overview.activeActivity && <div className="together-active"><div><span className="together-active-kind">● {overview.activeActivity.paused ? '已暂停' : `正在${overview.activeActivity.category}`}</span><span className="together-active-elapsed">本次 {formatClock(overview.activeActivity.elapsedSeconds)}</span></div><strong>{overview.activeActivity.title}</strong></div>}
       {overview.unreadCount > 0 && overview.latestUnread && <button className="together-latest" onClick={openTogetherConversation}><span>{overview.unreadCount} 条未读</span><strong>{overview.latestUnread.content}</strong><span aria-hidden="true">↗</span></button>}
       {overview.unreadCount === 0 && <button className="together-message-link" onClick={openTogetherConversation}>{overview.latestUnread ? '继续对话' : '给对方留言'} <span>↗</span></button>}
       {error && <p className="quiet-copy">{error}</p>}
