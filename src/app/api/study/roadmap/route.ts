@@ -18,9 +18,9 @@ export async function GET(req: NextRequest) {
   const deckIds = new Set(deckRows.filter(deck => /leetcode|力扣|hot\s*100/i.test(deck.name)).map(deck => deck.id));
   const leetcodeItems = db.select().from(items).all().filter(item => deckIds.has(item.deckId));
   const remaining = leetcodeItems.filter(item => item.status === 'new').sort((a, b) => a.sortOrder - b.sortOrder);
-  const dailyLimit = settingValue('daily_leetcode_limit', 5);
+  const dailyLimit = settingValue('daily_leetcode_limit', 4);
   const firstDate = addDays(getLogicalDate(), 1);
-  const dailyPlanLimit = dailyLimit;
+  const dailyPlanLimit = Math.min(2, dailyLimit);
   const days = buildFirstPassRoadmap({
     firstDate,
     remainingNewItems: remaining.map(item => ({ id: item.id, title: item.title, difficulty: item.difficulty })),

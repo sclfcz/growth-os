@@ -24,8 +24,8 @@ export function buildDailyPlan(input: DailyPlanInput): DailyPlan {
     backlogCount = 0,
     backlogCapacity = Math.floor(budgetMinutes * .7 / reviewMinutes),
     minNewPerDay = 2,
-    maxNewPerDay = 5,
-    dailyQuestionLimit = 5,
+    maxNewPerDay = 2,
+    dailyQuestionLimit = 4,
   } = input;
 
   if (dayType === 'rest' || dayType === 'sick') {

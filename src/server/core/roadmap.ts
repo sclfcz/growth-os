@@ -16,7 +16,7 @@ export function buildFirstPassRoadmap(input: {
 }): RoadmapDay[] {
   const { firstDate, remainingNewItems, dueReviews, dailyQuestionLimit } = input;
   const dailyLimit = Math.max(1, Math.floor(dailyQuestionLimit));
-  const maxNewPerDay = Math.min(dailyLimit, Math.max(2, Math.floor(input.maxNewPerDay ?? dailyLimit)));
+  const maxNewPerDay = Math.min(dailyLimit, 2, Math.max(0, Math.floor(input.maxNewPerDay ?? 2)));
   const reviewLimit = Math.min(3, Math.max(0, dailyLimit - 2));
   const scheduledReviewIds = new Set<number>();
   const days: RoadmapDay[] = [];
