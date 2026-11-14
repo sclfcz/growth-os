@@ -5,26 +5,53 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 const REMINDER_AFTER_MS = 90 * 60 * 1000;
 const RESPONSE_WINDOW_MS = 60 * 1000;
 type ActiveLog = { id: number; category: 'study' | 'work'; title: string | null; startedAt: string; activeSince: string | null; elapsedSeconds: number; paused: boolean };
-type ReminderState = { startedAt: string; nextPromptAtElapsedSeconds: number; deadline?: number };
+type ReminderState = { version: 2; startedAt: string; nextPromptAtElapsedSeconds: number; deadline?: number };
 const storageKey = (username: string, id: number) => `growth-os:focus-reminder:${username}:${id}`;
 const parseState = (username: string, log: ActiveLog): ReminderState => {
   try {
     const value = localStorage.getItem(storageKey(username, log.id));
     if (value) {
-      const saved = JSON.parse(value) as ReminderState & { nextPromptAt?: number };
-      if (saved.startedAt === log.startedAt && Number.isFinite(saved.nextPromptAtElapsedSeconds)) return saved;
+      const saved = JSON.parse(value) as Partial<ReminderState> & { nextPromptAt?: number };
+      if (saved.version === 2 && saved.startedAt === log.startedAt && Number.isFinite(saved.nextPromptAtElapsedSeconds)) {
+        return saved as ReminderState;
+      }
       if (saved.startedAt === log.startedAt && Number.isFinite(saved.nextPromptAt)) {
-        return { startedAt: log.startedAt, nextPromptAtElapsedSeconds: log.elapsedSeconds + Math.max(0, (saved.nextPromptAt! - Date.now()) / 1000), ...(saved.deadline ? { deadline: saved.deadline } : {}) };
+        return { version: 2, startedAt: log.startedAt, nextPromptAtElapsedSeconds: log.elapsedSeconds + Math.max(0, (saved.nextPromptAt! - Date.now()) / 1000), ...(saved.deadline ? { deadline: saved.deadline } : {}) };
       }
     }
   } catch { /* Use the elapsed timer value when browser storage is unavailable. */ }
-  return { startedAt: log.startedAt, nextPromptAtElapsedSeconds: REMINDER_AFTER_MS / 1000 };
+  return { version: 2, startedAt: log.startedAt, nextPromptAtElapsedSeconds: REMINDER_AFTER_MS / 1000 };
 };
-const elapsedAt = (log: ActiveLog, now: number) => log.elapsedSeconds + (log.paused || !log.activeSince ? 0 : Math.max(0, Math.floor((now - Date.parse(log.activeSince)) / 1000)));
+// The API's elapsedSeconds already includes the running segment at response time.
+// Advance from the client snapshot time, not from activeSince, or the running
+// segment gets counted twice and the reminder can fire well before 90 minutes.
+const elapsedAt = (log: ActiveLog, now: number, snapshotAt: number) => log.elapsedSeconds + (log.paused ? 0 : Math.max(0, Math.floor((now - snapshotAt) / 1000)));
+
+function migrateReminderState(username: string, log: ActiveLog) {
+  try {
+    const key = storageKey(username, log.id);
+    const value = localStorage.getItem(key);
+    if (!value) return;
+    const saved = JSON.parse(value) as Partial<ReminderState> & { nextPromptAt?: number };
+    if (saved.startedAt !== log.startedAt || saved.version === 2) return;
+    const wasAwaitingResponse = Number.isFinite(saved.deadline);
+    const elapsedThreshold = REMINDER_AFTER_MS / 1000;
+    const state: ReminderState = {
+      version: 2,
+      startedAt: log.startedAt,
+      // Old reminders stored the active segment twice. Start a fresh interval
+      // after an acknowledgement so an old threshold cannot fire prematurely.
+      nextPromptAtElapsedSeconds: wasAwaitingResponse && log.elapsedSeconds < elapsedThreshold ? elapsedThreshold : log.elapsedSeconds + elapsedThreshold,
+      ...(wasAwaitingResponse && log.elapsedSeconds >= elapsedThreshold ? { deadline: saved.deadline } : {}),
+    };
+    localStorage.setItem(key, JSON.stringify(state));
+  } catch { /* The reminder can still use the in-memory timer snapshot. */ }
+}
 
 export function FocusReminder() {
   const [username, setUsername] = useState('');
   const [activeLogs, setActiveLogs] = useState<ActiveLog[]>([]);
+  const [activeSnapshotAt, setActiveSnapshotAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
   const [pendingId, setPendingId] = useState<number | null>(null);
   const [dismissedCycle, setDismissedCycle] = useState<number | null>(null);
@@ -36,8 +63,11 @@ export function FocusReminder() {
       const response = await fetch('/api/study/time', { cache: 'no-store' });
       if (!response.ok) return;
       const data = await response.json() as { username: string; activeLogs: ActiveLog[] };
+      const snapshotAt = Date.now();
+      for (const log of data.activeLogs) migrateReminderState(data.username, log);
       setUsername(data.username);
       setActiveLogs(data.activeLogs);
+      setActiveSnapshotAt(snapshotAt);
     } catch { /* Retry on the next poll. */ }
   }, []);
 
@@ -64,10 +94,10 @@ export function FocusReminder() {
       if (log.paused) continue;
       const saved = parseState(username, log);
       if (saved.deadline) return { log, saved };
-      if (!saved.deadline && elapsedAt(log, now) >= saved.nextPromptAtElapsedSeconds) return { log, saved };
+      if (!saved.deadline && elapsedAt(log, now, activeSnapshotAt) >= saved.nextPromptAtElapsedSeconds) return { log, saved };
     }
     return null;
-  }, [activeLogs, now, username]);
+  }, [activeLogs, activeSnapshotAt, now, username]);
 
   useEffect(() => {
     if (!username) return;
@@ -76,13 +106,14 @@ export function FocusReminder() {
       const saved = parseState(username, log);
       if (log.paused) {
         if (saved.deadline) {
-          saved.nextPromptAtElapsedSeconds = elapsedAt(log, now) + REMINDER_AFTER_MS / 1000;
+          saved.nextPromptAtElapsedSeconds = elapsedAt(log, now, activeSnapshotAt) + REMINDER_AFTER_MS / 1000;
           delete saved.deadline;
           try { localStorage.setItem(storageKey(username, log.id), JSON.stringify(saved)); } catch { /* The visible timer still works for this page session. */ }
         }
         continue;
       }
-      if (elapsedAt(log, now) >= saved.nextPromptAtElapsedSeconds && !saved.deadline) {
+      if (elapsedAt(log, now, activeSnapshotAt) >= saved.nextPromptAtElapsedSeconds && !saved.deadline) {
+        saved.version = 2;
         saved.deadline = now + RESPONSE_WINDOW_MS;
         try { localStorage.setItem(storageKey(username, log.id), JSON.stringify(saved)); } catch { /* The visible timer still works for this page session. */ }
       }
@@ -95,7 +126,7 @@ export function FocusReminder() {
         if (key?.startsWith(prefix) && !activeIds.has(Number(key.slice(prefix.length)))) localStorage.removeItem(key);
       }
     } catch { /* Ignore unavailable local storage. */ }
-  }, [activeLogs, now, username]);
+  }, [activeLogs, activeSnapshotAt, now, username]);
 
   useEffect(() => {
     if (pendingId === null && dueLog?.saved.deadline && dueLog.saved.nextPromptAtElapsedSeconds !== dismissedCycle) setPendingId(dueLog.log.id);
@@ -137,7 +168,7 @@ export function FocusReminder() {
   function continueFocus() {
     if (!pending || !username) return;
     const dismissedAt = pendingState?.nextPromptAtElapsedSeconds ?? null;
-    const next: ReminderState = { startedAt: pending.startedAt, nextPromptAtElapsedSeconds: elapsedAt(pending, now) + REMINDER_AFTER_MS / 1000 };
+    const next: ReminderState = { version: 2, startedAt: pending.startedAt, nextPromptAtElapsedSeconds: elapsedAt(pending, now, activeSnapshotAt) + REMINDER_AFTER_MS / 1000 };
     try { localStorage.setItem(storageKey(username, pending.id), JSON.stringify(next)); } catch { /* Keep this page's session usable without persistence. */ }
     setPendingId(null);
     setDismissedCycle(dismissedAt);
